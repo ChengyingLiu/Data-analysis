@@ -17,86 +17,71 @@ function processed_data = QuantumOsc(current, Samplewidth, Samplelength, thickne
 % %     PPMS Oe单位转化为特斯拉
 %     data.Magnet = data.Magnet/10000;
 
-%     % 去除重复的磁场值
-%     [unique_magnet, unique_indices] = unique(data.Magnet);
-%     unique_Rsq = data.Rsq(unique_indices);
-%         % 使用 loess 平滑处理
-%     span = 0.01; % 平滑范围，这里设置为 10% 的数据点范围
-%     unique_Rsq = smooth(unique_magnet, unique_Rsq, span, 'loess');
-% 去除重复磁场值
-[unique_magnet, unique_indices] = unique(data.Magnet);
-unique_Rsq = data.Rsq(unique_indices);
+    % 去除重复磁场值
+    [unique_magnet, unique_indices] = unique(data.Magnet);
+    unique_Rsq = data.Rsq(unique_indices);
 
-% 设置不希望被平滑的范围
-mask_keep_raw = (unique_magnet >= -0.1) & (unique_magnet <= 0.1);
-mask_smooth = ~mask_keep_raw;
 
-% 分开磁场和电阻数据
-magnet_raw = unique_magnet(mask_keep_raw);
-Rsq_raw = unique_Rsq(mask_keep_raw);
-
-magnet_smooth = unique_magnet(mask_smooth);
-Rsq_smooth = unique_Rsq(mask_smooth);
-
-% 平滑外部数据
-span = 0.005;
-Rsq_smooth_smoothed = smooth(magnet_smooth, Rsq_smooth, span, 'loess');
-
-% 合并平滑后的和未平滑的数据
-magnet_combined = [magnet_raw; magnet_smooth];
-Rsq_combined = [Rsq_raw; Rsq_smooth_smoothed];
-
-% 排序（因为拼接顺序可能乱了）
-[unique_magnet_sorted, sort_idx] = sort(magnet_combined);
-unique_Rsq_sorted = Rsq_combined(sort_idx);
-
-% 使用 sorted 版本继续后续处理
-unique_magnet = unique_magnet_sorted;
-unique_Rsq = unique_Rsq_sorted;
-%     %找到中心磁场
-%     % 找到 Rsq 最小值对应的磁场值
-%     [~, min_index] = min(unique_Rsq);
-%     zero_field_offset = unique_magnet(min_index);
-%     % 校准磁场数据
-%     unique_magnet = unique_magnet - zero_field_offset;
+% % 设置不希望被平滑的范围
+% mask_keep_raw = (unique_magnet >= -0.1) & (unique_magnet <= 0.1);
+% mask_smooth = ~mask_keep_raw;
+% 
+% % 分开磁场和电阻数据
+% magnet_raw = unique_magnet(mask_keep_raw);
+% Rsq_raw = unique_Rsq(mask_keep_raw);
+% 
+% magnet_smooth = unique_magnet(mask_smooth);
+% Rsq_smooth = unique_Rsq(mask_smooth);
+% 
+% % 平滑外部数据
+% span = 0.005;
+% Rsq_smooth_smoothed = smooth(magnet_smooth, Rsq_smooth, span, 'loess');
+% 
+% % 合并平滑后的和未平滑的数据
+% magnet_combined = [magnet_raw; magnet_smooth];
+% Rsq_combined = [Rsq_raw; Rsq_smooth_smoothed];
+% 
+% % 排序（因为拼接顺序可能乱了）
+% [unique_magnet_sorted, sort_idx] = sort(magnet_combined);
+% unique_Rsq_sorted = Rsq_combined(sort_idx);
+% 
+% % 使用 sorted 版本继续后续处理
 % 选择在 -0.1T 到 0.1T 范围内的磁场和 Rsq 数据
-    valid_indices = (unique_magnet >= -0.05) & (unique_magnet <= 0.05);
-    % 筛选出对应的磁场和 Rsq 数据
-    valid_magnet = unique_magnet(valid_indices);
-    valid_Rsq = unique_Rsq(valid_indices);
-    % 找到该范围内 Rsq 的最小值及对应的磁场
-    [~, min_index] = min(valid_Rsq);
-    zero_field_offset = valid_magnet(min_index); % 作为校准磁场
-    
-    % 校准磁场数据
-    unique_magnet = unique_magnet - zero_field_offset;
-    
+%     valid_indices = (unique_magnet >= -0.05) & (unique_magnet <= 0.05);
+%     valid_magnet = unique_magnet(valid_indices);
+%     valid_Rsq = unique_Rsq(valid_indices);
+%     [~, min_index] = min(valid_Rsq);
+%     zero_field_offset = valid_magnet(min_index); % 作为校准磁场
+%     unique_magnet = unique_magnet - zero_field_offset; % 校准磁场数据
 %     disp(['用于校准的磁场值: ', num2str(zero_field_offset)]);
+    % --- 插值设置 ---
+    interp_resolution = 1e-4;  % 100 μT
+    num_interp_points = round(2 * symmetric_magnetic_field / interp_resolution) + 1;
 
-
-    % 线性插值
-    num_interp_points = 5000*symmetric_magnetic_field;
+    % --- 构建对称插值磁场向量 ---
     interp_magnet = linspace(-symmetric_magnetic_field, symmetric_magnetic_field, num_interp_points);
-    interp_Rsq = interp1(unique_magnet, unique_Rsq, interp_magnet);
-
-
-    % 处理 NaN 值 数组中有NaN值就无法正常运行了
-    % 首先填充前面的 NaN 使用 'next' 方法
-    interp_Rsq = fillmissing(interp_Rsq, 'next');
-    interp_Rsq = fillmissing(interp_Rsq, 'previous');
-
-    % 对称化处理
-    symmetrized_Rsq = 0.5 * (interp_Rsq + flip(interp_Rsq));
-   
-%     % 平滑处理，调整 degree 参数
-%     degree = 1;  %平滑阶数
- %    span = 5;   %平滑窗口数
-  %  smoothed_Rsq = sgolayfilt(symmetrized_Rsq, degree, span);
+    
+    % --- 检查对称性 ---
+    tolerance = 1e-10;
+    if any(abs(interp_magnet + flip(interp_magnet)) > tolerance)
+        error('interp_magnet 不对称！请检查 symmetric_magnetic_field 与 interp_resolution。');
+    end
+    
+    % --- 排序保证插值单调 ---
+    [unique_magnet, sortIdx] = sort(unique_magnet);
+    unique_Rsq = unique_Rsq(sortIdx);
+    
+    % --- 插值（pchip 方法 + 允许外推）---
+    interp_Rsq = interp1(unique_magnet, unique_Rsq, interp_magnet, 'pchip', 'extrap');
+    
+    % --- 对称化处理 ---
+    symmetrized_Rsq = (interp_Rsq + flip(interp_Rsq)) / 2;
+    
+    % --- 最终结果赋值 ---
     Rsq = symmetrized_Rsq;
 
-
-    % 找到interp_magnet最接近0的索引
-    zero_field_index = abs(interp_magnet) == min(abs(interp_magnet));
+% 计算MR 
+    zero_field_index = abs(interp_magnet) == min(abs(interp_magnet)); % 找到interp_magnet最接近0的索引
     
     % 提取symmetrized_Rsq在磁场为0时的值
     Rsq_at_zero_field = min(abs(Rsq(zero_field_index)));
@@ -113,58 +98,16 @@ unique_Rsq = unique_Rsq_sorted;
 
 % corrected_Rsq_invB 相关 这一部分需要去Origin确定拟合参数再回来输出；
     % 选择 1 到 13T 的数据
-    selected_indices = (interp_magnet >= 1.2) & (interp_magnet <= symmetric_magnetic_field);
+    selected_indices = (interp_magnet >= 1) & (interp_magnet <= symmetric_magnetic_field);
     select_magnet = interp_magnet(selected_indices);
     selected_Rsq = Rsq(selected_indices);
 
     % 使用 loess 进行平滑 减去背底
-    span = 0.3; % 可调整的平滑参数
+    span = 0.3; % 可调整的平滑参数 这个参数能把强的振荡基本平滑掉
     selected_Rsq_loess = smooth(select_magnet, selected_Rsq, span, 'loess');
     selected_Rsq_loess = selected_Rsq_loess';
     % 计算差值
     corrected_Rsq = selected_Rsq - selected_Rsq_loess;
-
-
-%     % 1/B 的相关数据
-% invB = 1 ./ select_magnet;
-% 
-% % 插值100000个点
-% num_interp_points = 100000;
-% invB_interp = linspace(min(invB), max(invB), num_interp_points);
-% 
-% corrected_Rsq_invB = interp1(invB, corrected_Rsq, invB_interp);
-% 
-% % 插值后的间隔
-% spacing = (max(invB_interp) - min(invB_interp)) / (num_interp_points - 1);
-% 
-% % 计算 FFT 点数，使其为 2^n
-% N = 2^nextpow2(num_interp_points);
-% 
-% % 执行 FFT 并计算幅度谱
-% y_fft = fft(corrected_Rsq_invB, N);
-% y_fft_magnitude = abs(y_fft) / N;  % 归一化处理
-% 
-% % 特殊处理零频点
-% y_fft_magnitude(2:end) = y_fft_magnitude(2:end) * 2;
-% 
-% % 计算频率轴
-% Fs = 1 / spacing;  % 采样率
-% f = (0:(N/2 - 1)) * (Fs / N);  % 频率轴
-% 
-% % 截取感兴趣的频率范围 0 ~ 350 Hz
-% freq_limit = 350;
-% valid_indices = f <= freq_limit;
-% 
-% f_limited = f(valid_indices);
-% y_fft_limited = y_fft_magnitude(valid_indices);
-% 
-% % 绘制 FFT 结果
-% figure;
-% plot(f_limited, y_fft_limited, '.-');
-% xlabel('Frequency (Hz)');
-% ylabel('Amplitude');
-% title('FFT of the Corrected Signal (0 to 350 Hz)');
-% 
 
 %     % 多项式拟合
 %     poly_degree = 4;  % 你可以调整多项式的阶数
@@ -177,32 +120,26 @@ unique_Rsq = unique_Rsq_sorted;
     % 1/B 的计算
     invB = 1 ./ select_magnet;
     
-        % 线性插值
+% 线性插值
     num_interp_points = 100000;
     invB_interp = linspace(min(invB), max(invB), num_interp_points);
     corrected_Rsq_invB = interp1(invB, corrected_Rsq, invB_interp, 'linear');
     
-    % --- Zero-padding 零填充 ---
-    padding_points = 100000;  % 补零10万点（你可以自己调这个数量）
-    corrected_Rsq_invB_padded = [corrected_Rsq_invB, zeros(1, padding_points)];
-    
-    % 更新数据长度
-    N_padded = length(corrected_Rsq_invB_padded);
-    
     % FFT
-    spacing = (max(invB) - min(invB)) / (num_interp_points - 1);  % 原始插值点间隔（注意还是用插值前的spacing）
-    y_fft = fft(corrected_Rsq_invB_padded);  % 对补零后的数据做FFT
+    spacing = (max(invB) - min(invB)) / (num_interp_points - 1);  % 插值点间隔
+    N = length(corrected_Rsq_invB);  % 数据长度
+    y_fft = fft(corrected_Rsq_invB);  % FFT 计算
     
-    % 计算频率轴
-    freq_axis = (0:N_padded-1) / (N_padded * spacing);  % 频率轴
+    % 计算频率轴 (非整数频率)
+    freq_axis = (0:N-1) / (N * spacing);  % 频率轴，包含正负频率
     
     % 只保留正频率部分（FFT 对称性）
-    half_index = ceil(N_padded / 2);
+    half_index = ceil(N / 2);
     x_fft = freq_axis(1:half_index);
     y_fft = y_fft(1:half_index);  % 取正频率部分的复数结果
     
     % 归一化处理
-    y_fft = abs(y_fft) / N_padded;  % 对振幅进行归一化
+    y_fft = abs(y_fft) / N;  % 对振幅进行归一化
     y_fft(2:end) = y_fft(2:end) * 2;  % 非直流分量乘以 2
     
     % 截取 0 ~ 350 Hz 的频率范围
@@ -212,7 +149,6 @@ unique_Rsq = unique_Rsq_sorted;
     % 使用筛选后的频率和幅度
     x_fft_limited = x_fft(valid_indices);
     y_fft_limited = y_fft(valid_indices);  % 对应的幅度
-
 
     % === 自动寻峰部分 ===
     % 寻找峰值（只考虑明显的波峰）
@@ -294,7 +230,7 @@ unique_Rsq = unique_Rsq_sorted;
     Gxx = Rsq ./(Rsq.^2+ Ryx.^2);
     Gyx = Ryx ./(Rsq.^2+ Ryx.^2);
     processed_data.Gxx = Gxx;
-    processed_data.Gyx = Gyx*vK;%这里我计算了量子电导，不需要的把vK去掉即可
+    processed_data.Gyx = Gyx*vK; %这里我计算了量子电导，不需要的把vK去掉即可
     sigmaxx = rhoxx ./(rhoxx.^2+ rhoyx.^2);
     sigmayx = rhoyx ./(rhoxx.^2+ rhoyx.^2);
     processed_data.sigmaxx = sigmaxx;
