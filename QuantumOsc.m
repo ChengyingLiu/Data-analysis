@@ -21,7 +21,24 @@ function processed_data = QuantumOsc(current, Samplewidth, Samplelength, thickne
     [unique_magnet, unique_indices] = unique(data.Magnet);
     unique_Rsq = data.Rsq(unique_indices);
 
-
+% % 保存原始数据备份
+% unique_Rsq_raw = unique_Rsq;
+% 
+% % ---- 去除跳点 ----
+% diff_Rsq = [0; abs(diff(unique_Rsq))];
+% threshold = 5 * median(diff_Rsq);
+% valid_idx = diff_Rsq < threshold;
+% unique_Rsq(~valid_idx) = interp1(unique_magnet(valid_idx), unique_Rsq(valid_idx), unique_magnet(~valid_idx), 'linear', 'extrap');
+% 
+% % ---- 可选：再轻度平滑一次 ----
+% unique_Rsq = medfilt1(unique_Rsq, 5);
+% figure;
+% plot(unique_magnet, unique_Rsq_raw, 'r--'); hold on;
+% plot(unique_magnet, unique_Rsq, 'b-');
+% legend('Raw', 'Filtered');
+% xlabel('Magnet (T)');
+% ylabel('R_{sq} (\Omega)');
+% title('Raw vs Filtered Rsq');
 % % 设置不希望被平滑的范围
 % mask_keep_raw = (unique_magnet >= -0.1) & (unique_magnet <= 0.1);
 % mask_smooth = ~mask_keep_raw;
@@ -55,17 +72,17 @@ function processed_data = QuantumOsc(current, Samplewidth, Samplelength, thickne
 %     unique_magnet = unique_magnet - zero_field_offset; % 校准磁场数据
 %     disp(['用于校准的磁场值: ', num2str(zero_field_offset)]);
     % --- 插值设置 ---
-    interp_resolution = 1e-4;  % 100 μT
+    interp_resolution = 1e-3;  % 1 mT
     num_interp_points = round(2 * symmetric_magnetic_field / interp_resolution) + 1;
 
     % --- 构建对称插值磁场向量 ---
     interp_magnet = linspace(-symmetric_magnetic_field, symmetric_magnetic_field, num_interp_points);
     
-    % --- 检查对称性 ---
-    tolerance = 1e-10;
-    if any(abs(interp_magnet + flip(interp_magnet)) > tolerance)
-        error('interp_magnet 不对称！请检查 symmetric_magnetic_field 与 interp_resolution。');
-    end
+%     % --- 检查对称性 ---
+%     tolerance = 1e-10;
+%     if any(abs(interp_magnet + flip(interp_magnet)) > tolerance)
+%         error('interp_magnet 不对称！请检查 symmetric_magnetic_field 与 interp_resolution。');
+%     end
     
     % --- 排序保证插值单调 ---
     [unique_magnet, sortIdx] = sort(unique_magnet);
@@ -98,7 +115,7 @@ function processed_data = QuantumOsc(current, Samplewidth, Samplelength, thickne
 
 % corrected_Rsq_invB 相关 这一部分需要去Origin确定拟合参数再回来输出；
     % 选择 1 到 13T 的数据
-    selected_indices = (interp_magnet >= 1) & (interp_magnet <= symmetric_magnetic_field);
+    selected_indices = (interp_magnet >= 1) & (interp_magnet <= symmetric_magnetic_field);% symmetric_magnetic_field
     select_magnet = interp_magnet(selected_indices);
     selected_Rsq = Rsq(selected_indices);
 
@@ -120,7 +137,7 @@ function processed_data = QuantumOsc(current, Samplewidth, Samplelength, thickne
     % 1/B 的计算
     invB = 1 ./ select_magnet;
     
-% 线性插值
+% 线性插值 与 FFT
     num_interp_points = 100000;
     invB_interp = linspace(min(invB), max(invB), num_interp_points);
     corrected_Rsq_invB = interp1(invB, corrected_Rsq, invB_interp, 'linear');
@@ -143,7 +160,7 @@ function processed_data = QuantumOsc(current, Samplewidth, Samplelength, thickne
     y_fft(2:end) = y_fft(2:end) * 2;  % 非直流分量乘以 2
     
     % 截取 0 ~ 350 Hz 的频率范围
-    freq_limit = 350;  % 设置频率限制
+    freq_limit = 250;  % 设置频率限制
     valid_indices = (x_fft >= 0) & (x_fft <= freq_limit);  % 筛选有效频率范围
     
     % 使用筛选后的频率和幅度
@@ -152,7 +169,7 @@ function processed_data = QuantumOsc(current, Samplewidth, Samplelength, thickne
 
     % === 自动寻峰部分 ===
     % 寻找峰值（只考虑明显的波峰）
-    [min_prominence, max_num_peaks] = deal(0.01, 9); % 设置最小显著性和最多峰数
+    [min_prominence, max_num_peaks] = deal(0.01, 9); % 设置最小显著性和最多峰数·
     [peak_values, peak_locs] = findpeaks(y_fft_limited, x_fft_limited, ...
         'MinPeakProminence', min_prominence, ...
         'SortStr', 'descend', ...
@@ -179,51 +196,84 @@ function processed_data = QuantumOsc(current, Samplewidth, Samplelength, thickne
     processed_data.invB = invB_interp;
     processed_data.corrected_Rsq_invB = corrected_Rsq_invB;
 
-% Hall 相关
-% VyxColumn = '';
+    % -----------------------------
+    % Hall 相关分析部分
+    % -----------------------------
     if ~isempty(VyxColumn)
-        % 计算Hall电阻
+        % 计算 Hall 电阻
         data.Ryx = data.(VyxColumn) / current;
         unique_Ryx = data.Ryx(unique_indices);
-        span = 0.01; % 平滑范围，这里设置为 10% 的数据点范围
+    
+        % 平滑与插值
+        span = 0.01; % loess 平滑参数
         unique_Ryx = smooth(unique_magnet, unique_Ryx, span, 'loess');
         interp_Ryx = interp1(unique_magnet, unique_Ryx, interp_magnet);
         interp_Ryx = fillmissing(interp_Ryx, 'next');
         interp_Ryx = fillmissing(interp_Ryx, 'previous');
-
-        % 反对称化
+    
+        % 反对称化（去除接触不对称影响）
         Antisymmetrized_Ryx = 0.5 * (interp_Ryx - flip(interp_Ryx));
         Ryx = Antisymmetrized_Ryx;
-        % 选择-0.2到0.2T的数据
-        selected_indices = (interp_magnet >= 1) & (interp_magnet <= 2);
-        selected_magnet = interp_magnet(selected_indices);
-        selected_Ryx = Ryx(selected_indices);
-
-        % 线性拟合
-        linear_fit = polyfit(selected_magnet, selected_Ryx, 1);
-
-        % 提取斜率（2D霍尔系数）
-        RH_2D = linear_fit(1);
-        % 提取斜率（3D霍尔系数）
-        RH_3D = RH_2D * thickness;
-        % 计算载流子浓度 单位：m-2
-        CarrierDensity_2D = 1 / (RH_2D * electron);
-        % 计算载流子浓度 单位：m-3
-        CarrierDensity_3D = 1 / (RH_3D * electron);
-        % 计算霍尔迁移率 单位：m-2/Vs
-        mu = abs(RH_2D / Rsq_at_zero_field);
-
-        % 返回处理后的数据
-        % Ryx
+    
+        % -----------------------------
+        % 三个区间：0~0.1T, 1~3T, 7~13T
+        % -----------------------------
+        field_ranges = [0, 0.1; 1, 3; 7, 13];
+        range_names = {'low', 'mid', 'high'};
+    
+        electron = 1.602176634e-19; % 元电荷 (C)
+    
+        for i = 1:3
+            range_min = field_ranges(i,1);
+            range_max = field_ranges(i,2);
+            range_label = range_names{i};
+    
+            % 选择该区间的数据
+            sel_idx = (interp_magnet >= range_min) & (interp_magnet <= range_max);
+            B_sel = interp_magnet(sel_idx);
+            Ryx_sel = Ryx(sel_idx);
+    
+            if numel(B_sel) >= 5  % 至少 5 个点再拟合
+                % 线性拟合 Ryx = RH_2D * B + offset
+                p = polyfit(B_sel, Ryx_sel, 1);
+                RH_2D = p(1);
+                RH_3D = RH_2D * thickness;
+    
+                % 载流子浓度
+                CarrierDensity_2D = 1 / (RH_2D * electron);
+                CarrierDensity_3D = 1 / (RH_3D * electron);
+    
+                % 迁移率
+                mu = abs(RH_2D / Rsq_at_zero_field);
+    
+                % 保存结果（带区间标签）
+                processed_data.(['RH_2D_' range_label]) = RH_2D;
+                processed_data.(['RH_3D_' range_label]) = RH_3D;
+                processed_data.(['CarrierDensity_2D_' range_label]) = CarrierDensity_2D;
+                processed_data.(['CarrierDensity_3D_' range_label]) = CarrierDensity_3D;
+                processed_data.(['mu_' range_label]) = mu;
+            else
+                warning('磁场区间 %.2f~%.2f T 数据点过少，跳过拟合。', range_min, range_max);
+            end
+        end
+    
+        % -----------------------------
+        % 电阻率与电导张量部分
+        % -----------------------------
         rhoyx = Ryx * thickness;
         processed_data.Ryx = Ryx;
         processed_data.rhoyx = rhoyx;
-        
-        processed_data.RH_2D = RH_2D;
-        processed_data.CarrierDensity_2D = CarrierDensity_2D;
-        processed_data.RH_3D = RH_3D;
-        processed_data.CarrierDensity_3D = CarrierDensity_3D;
-        processed_data.mu = mu;
+    
+        % 电导计算
+        Gxx = Rsq ./ (Rsq.^2 + Ryx.^2);
+        Gyx = Ryx ./ (Rsq.^2 + Ryx.^2);
+        processed_data.Gxx = Gxx;
+        processed_data.Gyx = Gyx * vK; % 若不需要量子化，去掉 vK
+    
+        sigmaxx = rhoxx ./ (rhoxx.^2 + rhoyx.^2);
+        sigmayx = rhoyx ./ (rhoxx.^2 + rhoyx.^2);
+        processed_data.sigmaxx = sigmaxx;
+        processed_data.sigmayx = sigmayx;
     end
 
     % 处理电导率
